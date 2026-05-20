@@ -6,6 +6,12 @@ A tool to parse Burp Suite project files (proxy-history).
 
 This tool reconstructs HTTP transactions from Burp's internal bump-allocator heap. It walks the structural HashMap and catalog BTree to locate and pair request/response chunks.
 
+## Installation
+
+```bash
+go install github.com/bonzitechnology/burpparse@latest
+```
+
 ## Features
 
 - **Structural Parsing:** Follows Burp's HashMap/BTree hierarchy to extract every proxy row accurately.
