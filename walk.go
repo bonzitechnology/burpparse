@@ -125,13 +125,17 @@ func walkProxyHistory(data []byte) []proxyRow {
 			canonical = ptrs
 			break
 		}
-		// Fallback: keep the largest yielded set if size was 0/missing.
-		if size == 0 && len(ptrs) > len(canonical) {
+		// size may be stale (entries deleted but counter not decremented).
+		// Keep the largest set regardless.
+		if len(ptrs) > len(canonical) {
 			canonical = ptrs
 		}
 	}
-	if canonical == nil {
+	if len(canonical) == 0 {
 		return nil
+	}
+	if GlobalVerbose && size > 0 && uint32(len(canonical)) != size {
+		fmt.Fprintf(os.Stderr, "walk: size mismatch: stored=%d actual=%d (deleted entries)\n", size, len(canonical))
 	}
 
 	// Resolve req/resp chunk offsets per row.
@@ -172,6 +176,9 @@ func walkHashMapTree(data []byte, vbRoot uint64) []uint64 {
 	n := uint64(len(data))
 	vb := parseNodeCompactRow(data, vbRoot)
 	if len(vb.cols) < 3 {
+		if GlobalVerbose {
+			fmt.Fprintf(os.Stderr, "  hashmap 0x%x: vbRoot too few cols (%d)\n", vbRoot, len(vb.cols))
+		}
 		return nil
 	}
 	// bucket-desc ptr = first 8-byte col with sane in-file value.
@@ -183,32 +190,76 @@ func walkHashMapTree(data []byte, vbRoot uint64) []uint64 {
 		}
 	}
 	if bdPtr == 0 {
+		if GlobalVerbose {
+			fmt.Fprintf(os.Stderr, "  hashmap 0x%x: no bdPtr found in vb cols\n", vbRoot)
+		}
 		return nil
 	}
 	bd := parseNodeCompactRow(data, bdPtr)
 	if len(bd.cols) < 2 {
+		if GlobalVerbose {
+			fmt.Fprintf(os.Stderr, "  hashmap 0x%x: bd @0x%x too few cols (%d)\n", vbRoot, bdPtr, len(bd.cols))
+		}
 		return nil
 	}
 	l1Ptr := bd.cols[1].val
 	if !inFile(l1Ptr, n) || l1Ptr+8 > n {
+		if GlobalVerbose {
+			fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1Ptr=0x%x out of range\n", vbRoot, l1Ptr)
+		}
 		return nil
 	}
+	l1TotalLen := binary.BigEndian.Uint32(data[l1Ptr : l1Ptr+4])
 	l1N := binary.BigEndian.Uint32(data[l1Ptr+4 : l1Ptr+8])
+	if GlobalVerbose {
+		fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1Ptr=0x%x totalLen=%d l1N=%d\n", vbRoot, l1Ptr, l1TotalLen, l1N)
+	}
 	if l1N == 0 || l1N > 1<<20 {
+		if GlobalVerbose {
+			fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1N=%d rejected (0 or >1M)\n", vbRoot, l1N)
+		}
 		return nil
 	}
-	var ptrs []uint64
+	var (
+		ptrs             []uint64
+		skippedL2Zero    int
+		skippedL2OOB     int
+		skippedL2NZero   int
+		skippedL2NTooBig int
+		skippedRPZero    int
+		skippedRPOOB     int
+		l1OOB            int
+	)
 	for i := uint32(0); i < l1N; i++ {
 		ePos := l1Ptr + 8 + uint64(i)*8
 		if ePos+8 > n {
+			l1OOB++
 			break
 		}
 		l2Ptr := binary.BigEndian.Uint64(data[ePos : ePos+8])
-		if l2Ptr == 0 || !inFile(l2Ptr, n) || l2Ptr+8 > n {
+		if l2Ptr == 0 {
+			skippedL2Zero++
 			continue
 		}
+		if !inFile(l2Ptr, n) || l2Ptr+8 > n {
+			skippedL2OOB++
+			if GlobalVerbose {
+				fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1[%d] l2Ptr=0x%x OOB\n", vbRoot, i, l2Ptr)
+			}
+			continue
+		}
+		l2TotalLen := binary.BigEndian.Uint32(data[l2Ptr : l2Ptr+4])
 		l2N := binary.BigEndian.Uint32(data[l2Ptr+4 : l2Ptr+8])
-		if l2N == 0 || l2N > 1<<20 {
+		_ = l2TotalLen
+		if l2N == 0 {
+			skippedL2NZero++
+			continue
+		}
+		if l2N > 1<<20 {
+			skippedL2NTooBig++
+			if GlobalVerbose {
+				fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1[%d] l2Ptr=0x%x l2N=%d too big (totalLen=%d)\n", vbRoot, i, l2Ptr, l2N, l2TotalLen)
+			}
 			continue
 		}
 		for j := uint32(0); j < l2N; j++ {
@@ -218,13 +269,22 @@ func walkHashMapTree(data []byte, vbRoot uint64) []uint64 {
 			}
 			rp := binary.BigEndian.Uint64(data[rPos : rPos+8])
 			if rp == 0 {
+				skippedRPZero++
 				continue
 			}
 			if !inFile(rp, n) {
+				skippedRPOOB++
+				if GlobalVerbose {
+					fmt.Fprintf(os.Stderr, "  hashmap 0x%x: l1[%d] l2[%d] rp=0x%x OOB\n", vbRoot, i, j, rp)
+				}
 				continue
 			}
 			ptrs = append(ptrs, rp)
 		}
+	}
+	if GlobalVerbose {
+		fmt.Fprintf(os.Stderr, "  hashmap 0x%x: collected=%d skipped: l2zero=%d l2oob=%d l2Nzero=%d l2Nbig=%d rpZero=%d rpOOB=%d l1OOB=%d\n",
+			vbRoot, len(ptrs), skippedL2Zero, skippedL2OOB, skippedL2NZero, skippedL2NTooBig, skippedRPZero, skippedRPOOB, l1OOB)
 	}
 	return ptrs
 }
