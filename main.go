@@ -55,8 +55,52 @@ func main() {
 	)
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: burpparse <file.burp> [file2.burp ...] [flags]\n\nFlags:\n")
-		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "Usage: burpparse <file.burp> [file2.burp ...] [flags]\n")
+
+		fmt.Fprintf(os.Stderr, "\nOutput Formats:\n")
+		fmt.Fprintf(os.Stderr, "  -json         output as JSON array\n")
+		fmt.Fprintf(os.Stderr, "  -jsonl        output as JSONL (one JSON object per line, good for jq/grep)\n")
+		fmt.Fprintf(os.Stderr, "  -csv          output as CSV\n")
+		fmt.Fprintf(os.Stderr, "  -har          output as HAR JSON\n")
+		fmt.Fprintf(os.Stderr, "  -curl         output as curl commands\n")
+		fmt.Fprintf(os.Stderr, "  -urls         print unique URLs\n")
+
+		fmt.Fprintf(os.Stderr, "\nExtraction & Analysis:\n")
+		fmt.Fprintf(os.Stderr, "  -body         print decoded response body to stdout\n")
+		fmt.Fprintf(os.Stderr, "  -cookies      extract cookies from requests/responses\n")
+		fmt.Fprintf(os.Stderr, "  -params       aggregate request parameter names\n")
+		fmt.Fprintf(os.Stderr, "  -secrets      scan for credentials and secrets\n")
+		fmt.Fprintf(os.Stderr, "  -headers      show interesting security headers\n")
+		fmt.Fprintf(os.Stderr, "  -req          print raw request for matched entries\n")
+		fmt.Fprintf(os.Stderr, "  -resp         print raw response for matched entries\n")
+		fmt.Fprintf(os.Stderr, "  -out string   write decoded response body to file ('auto' = URL-derived name)\n")
+
+		fmt.Fprintf(os.Stderr, "\nFiltering:\n")
+		fmt.Fprintf(os.Stderr, "  -host string        filter by host substring (case-insensitive)\n")
+		fmt.Fprintf(os.Stderr, "  -exclude string     exclude hosts (comma-separated)\n")
+		fmt.Fprintf(os.Stderr, "  -scope string       include only these hosts (comma-separated, supports subdomains)\n")
+		fmt.Fprintf(os.Stderr, "  -path string        filter by path substring\n")
+		fmt.Fprintf(os.Stderr, "  -method string      filter by HTTP method\n")
+		fmt.Fprintf(os.Stderr, "  -status int         filter by exact status code\n")
+		fmt.Fprintf(os.Stderr, "  -status-min int     filter by min status code\n")
+		fmt.Fprintf(os.Stderr, "  -status-max int     filter by max status code\n")
+		fmt.Fprintf(os.Stderr, "  -ct string          filter by response Content-Type substring\n")
+		fmt.Fprintf(os.Stderr, "  -search string      regex search across request and response bytes\n")
+		fmt.Fprintf(os.Stderr, "  -has-resp           only entries with a response\n")
+		fmt.Fprintf(os.Stderr, "  -index int          show single entry by index (default -1)\n")
+
+		fmt.Fprintf(os.Stderr, "\nProcessing Options:\n")
+		fmt.Fprintf(os.Stderr, "  -unique             deduplicate by request content (SHA-256)\n")
+		fmt.Fprintf(os.Stderr, "  -no-body            omit decoded bodies from -jsonl output (headers + metadata only)\n")
+		fmt.Fprintf(os.Stderr, "  -max-blob int       max HTTP blob size in MB (default 512)\n")
+
+		fmt.Fprintf(os.Stderr, "\nStats & Debugging:\n")
+		fmt.Fprintf(os.Stderr, "  -stats              print statistics summary\n")
+		fmt.Fprintf(os.Stderr, "  -parse-stats        print parse-time drop counters (blobs skipped, parse errors)\n")
+		fmt.Fprintf(os.Stderr, "  -btree              walk schema BTree from root@0xFA (structural; finds metadata only — proxy-history rows live in heap)\n")
+		fmt.Fprintf(os.Stderr, "  -dump-leaves        dump every leaf node reached from root@0xFA to stderr (for catalog discovery)\n")
+		fmt.Fprintf(os.Stderr, "  -v                  verbose: log walker stats to stderr\n")
+
 		fmt.Fprintln(os.Stderr, `
 Examples:
   burpparse file.burp
