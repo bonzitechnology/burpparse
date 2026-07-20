@@ -116,6 +116,7 @@ func walkProxyHistory(data []byte) []proxyRow {
 	// Walk every hashRoot; the canonical proxy index is the one whose rowPtr
 	// count == ProxyHistoryRoot size. Other hashRoots are secondary indices (host map etc).
 	var canonical []uint64
+	var bestDelta uint64 = ^uint64(0)
 	for _, hr := range hashRoots {
 		ptrs := walkHashMapTree(data, hr)
 		if GlobalVerbose {
@@ -126,8 +127,21 @@ func walkProxyHistory(data []byte) []proxyRow {
 			break
 		}
 		// size may be stale (entries deleted but counter not decremented).
-		// Keep the largest set regardless.
-		if len(ptrs) > len(canonical) {
+		// Pick the hashmap whose count is closest to the stored size rather than
+		// the largest — secondary indices (host maps) can be larger than the
+		// primary proxy-history index and their rows lack req/resp chunk pointers.
+		if size > 0 {
+			var delta uint64
+			if uint64(len(ptrs)) > uint64(size) {
+				delta = uint64(len(ptrs)) - uint64(size)
+			} else {
+				delta = uint64(size) - uint64(len(ptrs))
+			}
+			if delta < bestDelta {
+				bestDelta = delta
+				canonical = ptrs
+			}
+		} else if len(ptrs) > len(canonical) {
 			canonical = ptrs
 		}
 	}
