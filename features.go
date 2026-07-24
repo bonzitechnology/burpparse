@@ -260,7 +260,7 @@ func scanSecrets(e *Entry) []SecretMatch {
 			for _, m := range p.re.FindAll(data, -1) {
 				matches = append(matches, SecretMatch{
 					Pattern: p.name,
-					Value:   truncate(string(m), 80),
+					Value:   string(m),
 					Source:  src,
 				})
 			}
