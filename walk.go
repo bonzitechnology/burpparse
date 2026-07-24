@@ -328,19 +328,39 @@ func parseNodeCompactRow(data []byte, off uint64) node {
 		return node{off: off}
 	}
 	count := int(data[off+3])
+	var cols []nodeField
 	if count == 0 || count > 64 {
-		return node{off: off}
-	}
-	cols := make([]nodeField, count)
-	fdir := off + 4
-	for i := 0; i < count; i++ {
-		base := fdir + uint64(i*3)
-		if base+3 > n {
+		// Torn/overwritten node header: the count byte (and usually the first
+		// few fdir entries) have been clobbered by a partial write. Observed on
+		// the catalog node of an actively-written .burp file, whose header@0x40
+		// still points here but whose first 10 bytes were overwritten while the
+		// value region and fdir tail survived intact. Reconstruct the field
+		// directory from the surviving tail before giving up.
+		cols = recoverFieldDir(data, off, n)
+		if cols == nil {
 			return node{off: off}
 		}
-		cols[i].tid = data[base]
-		cols[i].relOff = binary.BigEndian.Uint16(data[base+1 : base+3])
+	} else {
+		cols = make([]nodeField, count)
+		fdir := off + 4
+		for i := 0; i < count; i++ {
+			base := fdir + uint64(i*3)
+			if base+3 > n {
+				return node{off: off}
+			}
+			cols[i].tid = data[base]
+			cols[i].relOff = binary.BigEndian.Uint16(data[base+1 : base+3])
+		}
 	}
+	fillColValues(data, off, n, cols)
+	return node{off: off, cols: cols}
+}
+
+// fillColValues infers each column's width (gap to the next column's relOff;
+// terminal column defaults to 8) and reads its value at off+relOff. cols must
+// already have tid and relOff populated.
+func fillColValues(data []byte, off, n uint64, cols []nodeField) {
+	count := len(cols)
 	for i := 0; i < count; i++ {
 		var w int
 		if i+1 < count {
@@ -359,7 +379,102 @@ func parseNodeCompactRow(data []byte, off uint64) node {
 			cols[i].val = uint64(cols[i].valU32)
 		}
 	}
-	return node{off: off, cols: cols}
+}
+
+// recoverFieldDir reconstructs a NodeCompact field directory whose header count
+// byte (at off+3) is unreadable because of a torn write. NodeCompact packs its
+// columns so the value region immediately follows the directory and relOffs
+// increase monotonically; each fdir entry is 3 bytes ([typeId u8][relOff u16 BE]).
+//
+// We find the longest run of consecutive, strictly-increasing, in-range fdir
+// entries that survived, take its stride, and treat the end of the run as the
+// last column (the value region that follows does not continue the monotonic
+// relOff pattern). Clobbered leading entries are extrapolated from the stride;
+// the torn prefix is always the low-index columns, whose typeIds are sequential
+// (tid == index). Returns nil if no confident run is found (caller falls back
+// to the chunk scan).
+func recoverFieldDir(data []byte, off, n uint64) []nodeField {
+	const maxCols = 64
+	const relOffCap = 0x1000 // NodeCompact rows are small; relOffs stay well below this
+
+	type rawEntry struct {
+		tid uint8
+		rel uint16
+		ok  bool
+	}
+	entries := make([]rawEntry, maxCols)
+	for k := 0; k < maxCols; k++ {
+		base := off + 4 + uint64(k)*3
+		if base+3 > n {
+			break
+		}
+		rel := binary.BigEndian.Uint16(data[base+1 : base+3])
+		entries[k] = rawEntry{
+			tid: data[base],
+			rel: rel,
+			ok:  rel > 0 && uint64(rel) < relOffCap,
+		}
+	}
+
+	// Longest run of positions with strictly-increasing, in-range relOffs.
+	bestStart, bestLen := -1, 0
+	curStart, curLen := -1, 0
+	var prevRel uint16
+	for k := 0; k < maxCols; k++ {
+		e := entries[k]
+		if e.ok && (curLen == 0 || e.rel > prevRel) {
+			if curLen == 0 {
+				curStart = k
+			}
+			curLen++
+			prevRel = e.rel
+			continue
+		}
+		if curLen > bestLen {
+			bestStart, bestLen = curStart, curLen
+		}
+		if e.ok {
+			curStart, curLen, prevRel = k, 1, e.rel
+		} else {
+			curLen = 0
+		}
+	}
+	if curLen > bestLen {
+		bestStart, bestLen = curStart, curLen
+	}
+	// Need a few entries to establish a reliable stride and avoid false hits.
+	if bestStart < 0 || bestLen < 3 {
+		return nil
+	}
+
+	// Column stride from the first two entries of the run.
+	e0, e1 := entries[bestStart], entries[bestStart+1]
+	stride := int(e1.rel) - int(e0.rel)
+	if stride <= 0 || stride > 64 {
+		return nil
+	}
+	count := bestStart + bestLen // run ends at the last column
+	if count < 2 || count > maxCols {
+		return nil
+	}
+	firstRel := int(e0.rel) - stride*bestStart
+	if firstRel <= 0 {
+		return nil
+	}
+
+	cols := make([]nodeField, count)
+	for k := 0; k < count; k++ {
+		if k >= bestStart && entries[k].ok {
+			cols[k].tid = entries[k].tid
+			cols[k].relOff = entries[k].rel
+		} else {
+			// Clobbered leading entry: extrapolate relOff from the stride and
+			// assume sequential typeIds for the torn prefix.
+			cols[k].relOff = uint16(firstRel + stride*k)
+			cols[k].tid = uint8(k)
+		}
+	}
+	return cols
 }
 
 func inFile(v, n uint64) bool { return v >= 0x48 && v < n }
